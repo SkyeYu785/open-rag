@@ -1,0 +1,34 @@
+# runtime data
+data/
+*.db
+*.db-wal
+*.db-shm
+uploads/
+.env
+
+# node (only present if a JS scaffold exists in the repo)
+node_modules/
+dist/
+npm-debug.log*
+
+# python
+__pycache__/
+*.py[cod]
+*.egg-info/
+build/
+dist/
+.pytest_cache/
+.coverage
+htmlcov/
+.venv/
+venv/
+
+# editors / os
+.idea/
+.vscode/
+.DS_Store
+Thumbs.db
+
+# models
+models/
+.cache/
