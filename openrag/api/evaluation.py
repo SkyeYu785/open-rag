@@ -116,26 +116,38 @@ def list_cases(dataset_id: str) -> list[dict]:
 @router.post("/datasets/{dataset_id}/cases", response_model=CaseOut, status_code=201)
 def create_case(dataset_id: str, payload: CaseCreate) -> dict:
     dataset = _get_dataset(dataset_id)
-    if not payload.reference_doc_ids and not [k for k in payload.keywords if k.strip()]:
-        raise HTTPException(status_code=400, detail="请至少提供参考文档或关键词标注")
+    keywords = list(dict.fromkeys(k.strip() for k in payload.keywords if k.strip()))
+    if not payload.reference_doc_ids and not payload.reference_chunk_ids and not keywords:
+        raise HTTPException(status_code=400, detail="请至少提供参考文档、参考分块或关键词标注")
 
     valid_docs = {
         row["id"] for row in db.query_all("SELECT id FROM documents WHERE kb_id = ?", (dataset["kb_id"],))
     }
-    unknown = [doc_id for doc_id in payload.reference_doc_ids if doc_id not in valid_docs]
-    if unknown:
+    unknown_docs = [doc_id for doc_id in payload.reference_doc_ids if doc_id not in valid_docs]
+    if unknown_docs:
         raise HTTPException(status_code=400, detail="参考文档不属于该知识库")
 
-    keywords = list(dict.fromkeys(k.strip() for k in payload.keywords if k.strip()))
+    valid_chunks = {
+        row["id"]
+        for row in db.query_all(
+            "SELECT id FROM chunks WHERE kb_id = ? AND level = 'child'", (dataset["kb_id"],)
+        )
+    }
+    unknown_chunks = [chunk_id for chunk_id in payload.reference_chunk_ids if chunk_id not in valid_chunks]
+    if unknown_chunks:
+        raise HTTPException(status_code=400, detail="参考分块不属于该知识库")
+
     case_id = uuid.uuid4().hex
     db.execute(
-        "INSERT INTO eval_cases (id, dataset_id, question, reference_docs, keywords, created_at)"
-        " VALUES (?, ?, ?, ?, ?, ?)",
+        "INSERT INTO eval_cases"
+        " (id, dataset_id, question, reference_docs, reference_chunks, keywords, created_at)"
+        " VALUES (?, ?, ?, ?, ?, ?, ?)",
         (
             case_id,
             dataset_id,
             payload.question.strip(),
             json.dumps(sorted(set(payload.reference_doc_ids))),
+            json.dumps(sorted(set(payload.reference_chunk_ids))),
             json.dumps(keywords, ensure_ascii=False),
             db.now(),
         ),

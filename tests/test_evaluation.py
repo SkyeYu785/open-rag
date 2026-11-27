@@ -67,7 +67,7 @@ def test_run_on_empty_dataset_fails(client, kb):
 
 def test_ndcg_is_bounded_when_a_keyword_repeats():
     hits = [{"doc_id": f"doc-{index}", "text": "最大工作压力 0.8MPa"} for index in range(5)]
-    metrics, flags = _case_metrics(hits, set(), ["0.8MPa"], k=5)
+    metrics, flags = _case_metrics(hits, set(), set(), ["0.8MPa"], k=5)
 
     assert metrics["hit"] == 1.0
     assert metrics["ndcg"] <= 1.0
@@ -80,12 +80,57 @@ def test_ndcg_uses_each_reference_document_once():
         {"doc_id": "a", "text": "x"},
         {"doc_id": "b", "text": "y"},
     ]
-    metrics, _ = _case_metrics(hits, {"a", "b"}, [], k=3)
+    metrics, _ = _case_metrics(hits, {"a", "b"}, set(), [], k=3)
 
     assert metrics["recall"] == 1.0
     assert metrics["mrr"] == 1.0
     # 相关文档出现在第 1、3 位，低于理想排序（第 1、2 位）
     assert round(metrics["ndcg"], 3) == 0.92
+
+
+def test_chunk_level_labels_are_strict():
+    hits = [
+        {"chunk_id": "c1", "doc_id": "d1", "text": "无关"},
+        {"chunk_id": "c2", "doc_id": "d1", "text": "答案在这里"},
+    ]
+    metrics, flags = _case_metrics(hits, {"d1"}, {"c2"}, [], k=2)
+
+    assert flags == [False, True]
+    assert metrics["mrr"] == 0.5
+    assert metrics["recall"] == 1.0
+
+
+def test_chunk_level_labels_are_strict_in_a_run(client, kb):
+    result = upload(client, kb["id"], "E-201.md", SAMPLE)
+    doc_id = result["accepted"][0]["id"]
+    items = client.get(f"/v1/documents/{doc_id}/chunks").json()["items"]
+    target = next(item for item in items if "0.8MPa" in item["text"])
+
+    dataset = _dataset(client, kb["id"])
+    case = client.post(
+        f"/v1/eval/datasets/{dataset['id']}/cases",
+        json={"question": "E-201 最大工作压力是多少", "reference_chunk_ids": [target["id"]]},
+    )
+    assert case.status_code == 201, case.text
+    assert case.json()["reference_chunk_ids"] == [target["id"]]
+
+    run = client.post(f"/v1/eval/datasets/{dataset['id']}/runs", json={"top_k": 5}).json()
+    detail = client.get(f"/v1/eval/runs/{run['id']}").json()
+
+    assert detail["status"] == "done", detail
+    assert detail["metrics"]["chunk_labeled"] == 1.0
+    assert detail["metrics"]["doc_labeled"] == 0.0
+    assert detail["metrics"]["hit_rate"] == 1.0
+    assert detail["results"][0]["hits"][0]["chunk_id"] == target["id"]
+
+
+def test_unknown_chunk_id_is_rejected(client, kb):
+    dataset = _dataset(client, kb["id"])
+    response = client.post(
+        f"/v1/eval/datasets/{dataset['id']}/cases",
+        json={"question": "问题", "reference_chunk_ids": ["unknown-chunk"]},
+    )
+    assert response.status_code == 400
 
 
 def test_dataset_cascade_delete(client, kb):

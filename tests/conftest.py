@@ -16,6 +16,11 @@ os.environ["OPENRAG_EMBEDDING_DIM"] = "256"
 os.environ["OPENRAG_CHILD_TOKENS"] = "120"
 os.environ["OPENRAG_PARENT_TOKENS"] = "400"
 os.environ["OPENRAG_CHUNK_OVERLAP"] = "20"
+os.environ["OPENRAG_RERANK_PROVIDER"] = "none"
+os.environ["OPENRAG_MIN_SCORE"] = "0"
+os.environ["OPENRAG_RELATIVE_CUTOFF"] = "0"
+os.environ["OPENRAG_MAX_PER_DOC"] = "0"
+os.environ["OPENRAG_DEDUPE_PARENT"] = "true"
 
 import pytest  # noqa: E402
 from fastapi.testclient import TestClient  # noqa: E402

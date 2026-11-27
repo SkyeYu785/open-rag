@@ -81,6 +81,11 @@ class RetrieveRequest(BaseModel):
     top_k: int = Field(default=6, ge=1, le=50)
     mode: RetrievalMode = "hybrid"
     include_context: bool = True
+    # filtering overrides; null means "use the server defaults"
+    min_score: float | None = Field(default=None, ge=0)
+    relative_cutoff: float | None = Field(default=None, ge=0, le=1)
+    max_per_doc: int | None = Field(default=None, ge=0, le=50)
+    dedupe_parent: bool | None = None
 
 
 class RetrievalHit(BaseModel):
@@ -97,6 +102,7 @@ class RetrievalHit(BaseModel):
     start_offset: int | None = None
     end_offset: int | None = None
     score: float
+    relevance: float = 0.0
     scores: dict[str, float] = Field(default_factory=dict)
 
 
@@ -106,6 +112,11 @@ class RetrieveResponse(BaseModel):
     kb_id: str
     total_chunks: int
     latency_ms: float
+    recalled: int = 0
+    returned: int = 0
+    dropped: int = 0
+    rerank_applied: bool = False
+    filter_score: str = ""
     hits: list[RetrievalHit]
 
 # --------------------------------------------------------------------------- #
@@ -130,6 +141,7 @@ class DatasetOut(BaseModel):
 class CaseCreate(BaseModel):
     question: str = Field(min_length=1, max_length=2000)
     reference_doc_ids: list[str] = Field(default_factory=list)
+    reference_chunk_ids: list[str] = Field(default_factory=list)
     keywords: list[str] = Field(default_factory=list)
 
 
@@ -138,6 +150,7 @@ class CaseOut(BaseModel):
     dataset_id: str
     question: str
     reference_doc_ids: list[str] = Field(default_factory=list)
+    reference_chunk_ids: list[str] = Field(default_factory=list)
     keywords: list[str] = Field(default_factory=list)
     created_at: str
 

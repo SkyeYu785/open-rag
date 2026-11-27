@@ -75,6 +75,7 @@ CREATE TABLE IF NOT EXISTS eval_cases (
     dataset_id      TEXT NOT NULL REFERENCES eval_datasets(id) ON DELETE CASCADE,
     question        TEXT NOT NULL,
     reference_docs  TEXT NOT NULL DEFAULT '[]',
+    reference_chunks TEXT NOT NULL DEFAULT '[]',
     keywords        TEXT NOT NULL DEFAULT '[]',
     created_at      TEXT NOT NULL
 );
@@ -115,6 +116,9 @@ _COLUMN_MIGRATIONS: dict[str, dict[str, str]] = {
         "token_count": "INTEGER NOT NULL DEFAULT 0",
         "start_offset": "INTEGER",
         "end_offset": "INTEGER",
+    },
+    "eval_cases": {
+        "reference_chunks": "TEXT NOT NULL DEFAULT '[]'",
     },
 }
 

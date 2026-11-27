@@ -62,6 +62,7 @@ def case_payload(row: dict[str, Any]) -> dict[str, Any]:
         "dataset_id": row["dataset_id"],
         "question": row["question"],
         "reference_doc_ids": db.loads(row["reference_docs"], []),
+        "reference_chunk_ids": db.loads(row.get("reference_chunks"), []),
         "keywords": db.loads(row["keywords"], []),
         "created_at": row["created_at"],
     }

@@ -17,6 +17,7 @@
 - **中文友好**：BM25 使用汉字 uni/bi-gram，无需 jieba；混合检索对中文短查询更稳
 - **父子块检索**：小块建索引保证精度，命中后回填父块保证上下文完整
 - **表格行展开**：DOCX / XLSX / CSV 的表格按 `列名: 值` 渲染，表头随每个分块重复
+- **重排 + 过滤**：可选 cross-encoder 重排（HTTP / 本地），再按相对分、父块去重和每文档上限收敛结果
 - **可插拔 embedding**：内置离线 hash 向量兜底，支持 sentence-transformers（BGE 等）与任意 OpenAI 兼容接口
 - **可评测**：自带标注数据管理与评测页，改 chunk 策略 / 换模型后能立刻看到指标变化
 - **两个页面**：知识库文档管理、检索评测；无构建步骤（原生 ES Module + CSS）
@@ -95,7 +96,7 @@ python -m openrag
 | GET/DELETE | `/v1/documents/{id}` | 文档详情 / 删除 |
 | POST | `/v1/documents/{id}/reindex` | 重新解析与向量化 |
 | GET | `/v1/documents/{id}/chunks` | 分块预览（`offset` / `limit`） |
-| POST | `/v1/retrieve` | 检索：`{kb_id, query, top_k, mode, include_context}` |
+| POST | `/v1/retrieve` | 检索：`{kb_id, query, top_k, mode, include_context, min_score, relative_cutoff, max_per_doc, dedupe_parent}` |
 | GET/POST | `/v1/eval/datasets` | 评测集列表 / 创建 |
 | GET/POST | `/v1/eval/datasets/{id}/cases` | 用例列表 / 添加 |
 | POST | `/v1/eval/datasets/{id}/runs` | 发起一次评测（异步） |
@@ -124,7 +125,12 @@ curl -s -X POST localhost:8000/v1/retrieve \
   "query": "E-201 最大工作压力",
   "mode": "hybrid",
   "total_chunks": 6,
-  "latency_ms": 1.8,
+  "recalled": 30,
+  "returned": 1,
+  "dropped": 29,
+  "rerank_applied": true,
+  "filter_score": "rerank",
+  "latency_ms": 42.3,
   "hits": [
     {
       "chunk_id": "…",
@@ -139,11 +145,14 @@ curl -s -X POST localhost:8000/v1/retrieve \
       "start_offset": 42,
       "end_offset": 386,
       "score": 0.0328,
-      "scores": {"vector": 0.61, "keyword": 4.27, "fused": 0.0328}
+      "relevance": 0.94,
+      "scores": {"vector": 0.61, "keyword": 4.27, "fused": 0.0328, "rerank": 0.94}
     }
   ]
 }
 ```
+
+`recalled / returned / dropped` 描述过滤过程：先召回一批候选，过滤后返回真正相关的。`relevance` 是当前用于过滤的分数（有 reranker 时为重排分）。
 
 `mode` 可选 `hybrid`（默认）/ `vector` / `keyword`。
 
@@ -152,9 +161,10 @@ curl -s -X POST localhost:8000/v1/retrieve \
 评测回答一个问题：**改完解析、分块或模型，检索到底变好了还是变差了？**
 
 1. 在「评测」页新建评测集（绑定一个知识库）
-2. 添加用例，每条用例提供至少一种标注：
-   - **关键词**：答案里必须出现的字符串（比如 `0.8MPa`），适合答案可核验的事实型问题
-   - **参考文档**：答案所在的文档，适合"这个问题该从哪份资料里找"
+2. 添加用例，每条用例提供至少一种标注（精度从高到低）：
+   - **参考分块**：答案所在的分块 ID（在「分块」预览里复制）。最准，能直接衡量排序；
+   - **关键词**：答案里必须出现的字符串（比如 `0.8MPa`），适合事实型问题；
+   - **参考文档**：答案所在的文档。**粒度最粗**：同一文档的所有分块都会被算作相关，指标会明显偏乐观，只建议作为兜底。
 3. 点「开始评测」，得到：
 
 | 指标 | 含义 |
@@ -182,6 +192,16 @@ curl -s -X POST localhost:8000/v1/retrieve \
 | `OPENRAG_PARENT_TOKENS` | `1400` | 父块（parent）目标长度，token |
 | `OPENRAG_CHUNK_OVERLAP` | `48` | 相邻 child 的重叠 token 数 |
 | `OPENRAG_MAX_UPLOAD_MB` | `50` | 单文件大小上限 |
+| `OPENRAG_RERANK_PROVIDER` | `none` | `none` / `http` / `local` |
+| `OPENRAG_RERANK_BASE_URL` | `http://127.0.0.1:8082/v1` | rerank 服务地址 |
+| `OPENRAG_RERANK_PATH` | `/rerank` | rerank 路径 |
+| `OPENRAG_RERANK_MODEL` | `BAAI/bge-reranker-v2-m3` | 模型名 |
+| `OPENRAG_RERANK_API_KEY` | – | Bearer token |
+| `OPENRAG_RERANK_CANDIDATES` | `30` | 送入 rerank 的候选数 |
+| `OPENRAG_MIN_SCORE` | `0` | 绝对分阈值，0 关闭 |
+| `OPENRAG_RELATIVE_CUTOFF` | `0.75` | 低于 `top × 该值` 的结果丢弃 |
+| `OPENRAG_MAX_PER_DOC` | `0` | 每文档最多返回的分块数，0 不限 |
+| `OPENRAG_DEDUPE_PARENT` | `true` | 同一父块只保留最高分子块 |
 | `OPENRAG_HOST` / `OPENRAG_PORT` | `127.0.0.1` / `8000` | 监听地址 |
 | `OPENRAG_CORS_ORIGINS` | `*` | 逗号分隔的允许来源 |
 
@@ -196,6 +216,30 @@ curl -s -X POST localhost:8000/v1/retrieve \
 5. **可回溯**：每块带 `page`、标题路径和 `start_offset/end_offset`（相对所在解析段）。
 
 > `OPENRAG_CHUNK_SIZE` 仍作为 `OPENRAG_CHILD_TOKENS` 的别名保留，但语义已从「字符」改为「token」。
+
+### 检索结果如何收敛
+
+`top_k` 只是上限，不代表一定返回 k 条。每次检索：
+
+1. **混合召回**（向量 + BM25，RRF），候选上限 `OPENRAG_RERANK_CANDIDATES`；
+2. **rerank**（可选）：cross-encoder 对「问题 × 候选分块」逐条打分，把"同主题"和"能回答"分开；
+3. **过滤**：绝对分 `min_score`、相对分 `score < top × relative_cutoff`；
+4. **去重**：同一 parent 只保留最高分子块；可选每文档上限 `max_per_doc`；
+5. **截断**到 `top_k`。
+
+响应里的 `recalled / returned / dropped / filter_score` 会告诉你每一步发生了什么。没有 reranker 时只能按向量或 BM25 分数过滤，而向量分数常常挤在很窄的区间（比如 0.61–0.70），分辨力有限——这时 rerank 的收益最大。
+
+```bash
+# 任何实现该契约的服务都可以：Cohere / Jina / vLLM / Xinference / TEI / 自建
+OPENRAG_RERANK_PROVIDER=http
+OPENRAG_RERANK_BASE_URL=http://127.0.0.1:8082/v1
+OPENRAG_RERANK_PATH=/rerank
+OPENRAG_RERANK_MODEL=BAAI/bge-reranker-v2-m3
+OPENRAG_RERANK_API_KEY=
+OPENRAG_RERANK_CANDIDATES=30
+```
+
+请求体 `{"model","query","documents","top_n"}`，响应 `{"results":[{"index","relevance_score"}]}`（也兼容 TEI 的顶层数组）。服务返回 logits 时会自动 sigmoid 归一化，阈值才能通用。本地模型用 `OPENRAG_RERANK_PROVIDER=local` + `pip install -e ".[local]"`。
 
 ## 目录结构
 
@@ -212,7 +256,8 @@ openrag/
     tokens.py         中英混排的 token 估算（可选 tiktoken）
     embedding.py       hash / sentence-transformers / openai
     bm25.py            中文 uni/bi-gram BM25
-    retrieval.py       向量 + BM25 + RRF
+    rerank.py          rerank 客户端（HTTP / 本地 CrossEncoder）
+    retrieval.py       向量 + BM25 + RRF + rerank + 过滤
     ingestion.py       解析 → 分块 → 向量化 → 入库
     evaluation.py      指标计算与评测任务
   web/                 零构建 Web UI（index.html / app.js / styles.css）

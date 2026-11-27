@@ -16,12 +16,16 @@ router = APIRouter(tags=["retrieval"])
 def retrieve(payload: RetrieveRequest) -> dict:
     get_kb_or_404(payload.kb_id)
     try:
-        hits, total, latency_ms = retrieval.retrieve(
+        hits, total, latency_ms, stats = retrieval.retrieve(
             kb_id=payload.kb_id,
             query=payload.query,
             top_k=payload.top_k,
             mode=payload.mode,
             include_context=payload.include_context,
+            min_score=payload.min_score,
+            relative_cutoff=payload.relative_cutoff,
+            max_per_doc=payload.max_per_doc,
+            dedupe_parent=payload.dedupe_parent,
         )
     except retrieval.IndexMismatch as exc:
         raise HTTPException(status_code=409, detail=str(exc)) from exc
@@ -32,5 +36,10 @@ def retrieve(payload: RetrieveRequest) -> dict:
         "kb_id": payload.kb_id,
         "total_chunks": total,
         "latency_ms": round(latency_ms, 2),
+        "recalled": stats["recalled"],
+        "returned": stats["returned"],
+        "dropped": stats["dropped"],
+        "rerank_applied": stats["rerank_applied"],
+        "filter_score": stats["filter_score"],
         "hits": hits,
     }

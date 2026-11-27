@@ -12,7 +12,7 @@ from fastapi.staticfiles import StaticFiles
 from . import db
 from .api import documents, evaluation, knowledge_bases, retrieval
 from .config import get_settings
-from .services import embedding
+from .services import embedding, rerank
 
 settings = get_settings()
 
@@ -61,6 +61,13 @@ def health() -> dict:
             "child_tokens": settings.child_tokens,
             "parent_tokens": settings.parent_tokens,
             "overlap_tokens": settings.overlap_tokens,
+        },
+        "rerank": rerank.rerank_info(),
+        "retrieval": {
+            "min_score": settings.min_score,
+            "relative_cutoff": settings.relative_cutoff,
+            "max_per_doc": settings.max_per_doc,
+            "dedupe_parent": settings.dedupe_parent,
         },
         "max_upload_mb": settings.max_upload_mb,
     }

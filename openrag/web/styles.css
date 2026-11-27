@@ -811,6 +811,17 @@ textarea {
   border: 1px solid var(--border);
 }
 
+.notice {
+  margin-top: 12px;
+  padding: 10px 12px;
+  border-radius: 8px;
+  border: 1px solid color-mix(in srgb, var(--warn) 35%, transparent);
+  background: var(--warn-soft);
+  color: var(--warn);
+  font-size: 12.5px;
+  line-height: 1.6;
+}
+
 /* ------------------------------------------------------------------ metrics */
 .metric-grid {
   display: grid;

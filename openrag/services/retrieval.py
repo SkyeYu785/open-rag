@@ -8,6 +8,7 @@ should actually read (small-to-big retrieval).
 from __future__ import annotations
 
 import json
+import logging
 import threading
 import time
 from dataclasses import dataclass
@@ -15,8 +16,12 @@ from dataclasses import dataclass
 import numpy as np
 
 from .. import db
+from ..config import get_settings
 from .bm25 import BM25Index
 from .embedding import get_embedder
+from .rerank import get_reranker
+
+logger = logging.getLogger(__name__)
 
 RRF_K = 60
 
@@ -168,6 +173,80 @@ def _top_indices(scores: np.ndarray, limit: int) -> list[tuple[int, float]]:
     return [(int(i), float(scores[i])) for i in ordered if scores[i] > 0]
 
 
+@dataclass
+class Filters:
+    min_score: float
+    relative_cutoff: float
+    max_per_doc: int
+    dedupe_parent: bool
+
+
+def _resolve_filters(
+    min_score: float | None,
+    relative_cutoff: float | None,
+    max_per_doc: int | None,
+    dedupe_parent: bool | None,
+) -> Filters:
+    settings = get_settings()
+    return Filters(
+        min_score=settings.min_score if min_score is None else max(0.0, min_score),
+        relative_cutoff=(
+            settings.relative_cutoff
+            if relative_cutoff is None
+            else min(1.0, max(0.0, relative_cutoff))
+        ),
+        max_per_doc=settings.max_per_doc if max_per_doc is None else max(0, max_per_doc),
+        dedupe_parent=settings.dedupe_parent if dedupe_parent is None else dedupe_parent,
+    )
+
+
+def _apply_filters(hits: list[dict], top_k: int, filters: Filters, score_key: str) -> tuple[list[dict], int]:
+    """Drop irrelevant tail, de-duplicate parents/documents, then truncate.
+
+    Returns the kept hits and how many were rejected by the filters (hits cut
+    off by ``top_k`` are truncation, not rejection).
+    """
+    if not hits:
+        return [], 0
+
+    top_score = max((hit["scores"].get(score_key, 0.0) for hit in hits), default=0.0)
+    cutoff = top_score * filters.relative_cutoff if top_score > 0 else 0.0
+
+    kept: list[dict] = []
+    dropped = 0
+    parent_seen: set[str] = set()
+    per_doc: dict[str, int] = {}
+
+    for hit in hits:
+        if len(kept) >= top_k:
+            break
+
+        score = hit["scores"].get(score_key, 0.0)
+        if filters.min_score and score < filters.min_score:
+            dropped += 1
+            continue
+        if filters.relative_cutoff and cutoff and score < cutoff:
+            dropped += 1
+            continue
+
+        parent_id = hit.get("parent_id")
+        if filters.dedupe_parent and parent_id:
+            if parent_id in parent_seen:
+                dropped += 1
+                continue
+            parent_seen.add(parent_id)
+
+        doc_id = hit["doc_id"]
+        if filters.max_per_doc and per_doc.get(doc_id, 0) >= filters.max_per_doc:
+            dropped += 1
+            continue
+        per_doc[doc_id] = per_doc.get(doc_id, 0) + 1
+
+        kept.append(hit)
+
+    return kept, dropped
+
+
 def retrieve(
     kb_id: str,
     query: str,
@@ -176,12 +255,22 @@ def retrieve(
     *,
     index: KBIndex | None = None,
     include_context: bool = True,
-) -> tuple[list[dict], int, float]:
-    """Return ``(hits, total_child_chunks, latency_ms)``."""
+    min_score: float | None = None,
+    relative_cutoff: float | None = None,
+    max_per_doc: int | None = None,
+    dedupe_parent: bool | None = None,
+) -> tuple[list[dict], int, float, dict]:
+    """Return ``(hits, total_child_chunks, latency_ms, stats)``."""
     started = time.perf_counter()
     index = index if index is not None else get_index(kb_id)
     if index.size == 0:
-        return [], 0, (time.perf_counter() - started) * 1000
+        return [], 0, (time.perf_counter() - started) * 1000, {
+            "recalled": 0,
+            "returned": 0,
+            "dropped": 0,
+            "rerank_applied": False,
+            "filter_score": "",
+        }
 
     query_vector = get_embedder().embed_query(query)
     query_vector = np.asarray(query_vector, dtype=np.float32)
@@ -191,30 +280,40 @@ def retrieve(
     if query_vector.size != index.dim:
         raise IndexMismatch("查询向量维度与索引维度不一致，请检查 embedding 模型配置")
 
+    filters = _resolve_filters(min_score, relative_cutoff, max_per_doc, dedupe_parent)
+
+    reranker = None
+    try:
+        reranker = get_reranker()
+    except Exception as exc:  # noqa: BLE001 - a broken rerank config must not break search
+        logger.warning("reranker unavailable, falling back to hybrid ranking: %s", exc)
+
     vector_scores = index.matrix @ query_vector
     keyword_scores = index.bm25.scores(query)
 
-    pool = min(index.size, max(top_k * 4, 40))
-    vector_ranked = _top_indices(vector_scores, pool)
-    keyword_ranked = _top_indices(keyword_scores, pool)
+    recall_limit = max(top_k, get_settings().rerank_candidates) if reranker else max(top_k * 4, 40)
+    recall_limit = min(recall_limit, index.size)
+
+    vector_ranked = _top_indices(vector_scores, recall_limit)
+    keyword_ranked = _top_indices(keyword_scores, recall_limit)
 
     if mode == "vector":
-        ranked = vector_ranked[:top_k]
-        fused: dict[int, float] = {i: score for i, score in ranked}
+        candidates = vector_ranked[:recall_limit]
+        fused: dict[int, float] = {i: score for i, score in candidates}
     elif mode == "keyword":
-        ranked = keyword_ranked[:top_k]
-        fused = {i: score for i, score in ranked}
+        candidates = keyword_ranked[:recall_limit]
+        fused = {i: score for i, score in candidates}
     else:
         scores: dict[int, float] = {}
         for rank, (i, _) in enumerate(vector_ranked):
             scores[i] = scores.get(i, 0.0) + 1.0 / (RRF_K + rank + 1)
         for rank, (i, _) in enumerate(keyword_ranked):
             scores[i] = scores.get(i, 0.0) + 1.0 / (RRF_K + rank + 1)
-        ranked = sorted(((i, s) for i, s in scores.items()), key=lambda item: item[1], reverse=True)[:top_k]
-        fused = dict(ranked)
+        candidates = sorted(scores.items(), key=lambda item: item[1], reverse=True)[:recall_limit]
+        fused = dict(candidates)
 
     hits: list[dict] = []
-    for rank, (i, score) in enumerate(ranked, start=1):
+    for i, score in candidates:
         hits.append(
             {
                 "chunk_id": index.chunk_ids[i],
@@ -230,7 +329,6 @@ def retrieve(
                 "start_offset": index.starts[i],
                 "end_offset": index.ends[i],
                 "score": float(fused.get(i, score)),
-                "rank": rank,
                 "scores": {
                     "vector": float(vector_scores[i]),
                     "keyword": float(keyword_scores[i]),
@@ -239,4 +337,35 @@ def retrieve(
             }
         )
 
-    return hits, index.size, (time.perf_counter() - started) * 1000
+    rerank_applied = False
+    if reranker is not None and hits:
+        try:
+            rerank_scores = reranker.rerank(query, [hit["text"] for hit in hits])
+            for hit, rerank_score in zip(hits, rerank_scores):
+                hit["scores"]["rerank"] = float(rerank_score)
+            hits.sort(key=lambda hit: hit["scores"].get("rerank", -1e9), reverse=True)
+            rerank_applied = True
+        except Exception as exc:  # noqa: BLE001 - degrade to hybrid ranking
+            logger.warning("rerank failed, keeping hybrid order: %s", exc)
+
+    if rerank_applied:
+        score_key = "rerank"
+    elif mode == "keyword":
+        score_key = "keyword"
+    else:
+        score_key = "vector"
+
+    recalled = len(hits)
+    selected, dropped = _apply_filters(hits, top_k, filters, score_key)
+    for rank, hit in enumerate(selected, start=1):
+        hit["rank"] = rank
+        hit["relevance"] = hit["scores"].get(score_key, 0.0)
+
+    stats = {
+        "recalled": recalled,
+        "returned": len(selected),
+        "dropped": dropped,
+        "rerank_applied": rerank_applied,
+        "filter_score": score_key,
+    }
+    return selected, index.size, (time.perf_counter() - started) * 1000, stats

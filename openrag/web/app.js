@@ -524,6 +524,7 @@ async function showChunks(doc, offset) {
         <span class="hit-rank">#${item.ordinal + 1}</span>
         ${item.page ? `<span class="pill">第 ${item.page} 页</span>` : ''}
         <span class="hit-score">${item.tokens || item.text.length} tokens</span>
+        <button class="link-btn" data-copy="${item.id}" title="复制分块 ID，用于评测标注">复制 ID</button>
       </div>
       <div class="hit-text">${escapeHtml(item.text)}</div>
     </div>`).join('');
@@ -548,6 +549,16 @@ async function showChunks(doc, offset) {
     button.addEventListener('click', () => {
       close();
       showChunks(doc, button.dataset.page === 'next' ? offset + 20 : Math.max(0, offset - 20));
+    });
+  });
+  $$('[data-copy]').forEach((button) => {
+    button.addEventListener('click', async () => {
+      try {
+        await navigator.clipboard.writeText(button.dataset.copy);
+        toast('分块 ID 已复制', 'ok');
+      } catch {
+        toast('复制失败，请手动选中文本', 'warn');
+      }
     });
   });
 }
@@ -577,11 +588,15 @@ async function runSearch(event) {
 
     box.innerHTML = `
       <div class="row faint" style="font-size:12px">
-        <span>${result.hits.length} 条结果</span>
+        <span>召回 ${result.recalled ?? result.hits.length} 条</span>
+        ${result.dropped ? `<span>·</span><span>过滤 ${result.dropped} 条</span>` : ''}
+        <span>·</span>
+        <span>返回 ${result.returned ?? result.hits.length} 条</span>
         <span>·</span>
         <span>知识库共 ${result.total_chunks} 个分块</span>
         <span>·</span>
         <span>${result.latency_ms.toFixed(1)} ms</span>
+        ${result.rerank_applied ? '<span>·</span><span>已重排</span>' : ''}
       </div>
       ${result.hits.map((hit, index) => `
         <div class="hit">
@@ -590,7 +605,7 @@ async function runSearch(event) {
             <span class="hit-doc">${escapeHtml(hit.doc_name)}</span>
             ${hit.page ? `<span class="pill">第 ${hit.page} 页</span>` : ''}
             ${hit.tokens ? `<span class="pill">${hit.tokens} tokens</span>` : ''}
-            <span class="hit-score">${hit.score.toFixed(4)}</span>
+            <span class="hit-score">${Number(hit.relevance ?? hit.score).toFixed(3)}</span>
           </div>
           <div class="hit-text">${escapeHtml(hit.text)}</div>
           ${hit.context ? `
@@ -598,7 +613,11 @@ async function runSearch(event) {
               <summary>父块上下文</summary>
               <div class="hit-text">${escapeHtml(hit.context)}</div>
             </details>` : ''}
-          <div class="hit-scores">vector ${hit.scores.vector.toFixed(3)} · keyword ${hit.scores.keyword.toFixed(2)} · fused ${hit.scores.fused.toFixed(4)}</div>
+          <div class="hit-scores">
+            vector ${hit.scores.vector.toFixed(3)} · keyword ${hit.scores.keyword.toFixed(2)}
+            ${typeof hit.scores.rerank === 'number' ? ` · rerank ${hit.scores.rerank.toFixed(3)}` : ''}
+            · ${result.filter_score || 'fused'} 过滤
+          </div>
         </div>`).join('')}`;
   } catch (error) {
     box.innerHTML = '';
@@ -872,7 +891,11 @@ function renderCaseTable() {
 
   body.innerHTML = state.cases.map((item) => {
     const marks = [];
-    if (item.reference_doc_ids.length) marks.push(`<span class="pill">${item.reference_doc_ids.length} 个参考文档</span>`);
+    const hasChunks = (item.reference_chunk_ids || []).length > 0;
+    if (hasChunks) marks.push(`<span class="pill ok">${item.reference_chunk_ids.length} 个参考分块</span>`);
+    if (item.reference_doc_ids.length) {
+      marks.push(`<span class="pill ${hasChunks ? '' : 'warn'}">${item.reference_doc_ids.length} 个参考文档</span>`);
+    }
     if (item.keywords.length) marks.push(`<span class="pill" title="${escapeHtml(item.keywords.join('、'))}">${item.keywords.length} 个关键词</span>`);
     return `<tr>
       <td style="max-width:520px">${escapeHtml(item.question)}</td>
@@ -963,19 +986,30 @@ function renderRunDetail(run) {
   const k = Number(metrics.k) || Number(run.config?.top_k) || 5;
   const results = run.results || [];
 
+  const labels = [];
+  if (metrics.chunk_labeled) labels.push(`分块级 ${metrics.chunk_labeled}`);
+  if (metrics.doc_labeled) labels.push(`文档级 ${metrics.doc_labeled}`);
+  if (metrics.keyword_labeled) labels.push(`关键词 ${metrics.keyword_labeled}`);
+  const labelNote = labels.length ? ` · 标注：${labels.join(' / ')}` : '';
+  const labelWarning =
+    !metrics.chunk_labeled && metrics.doc_labeled
+      ? `<div class="notice">当前用例只有文档级标注：同一文档里的所有分块都会被算作相关，指标偏乐观。建议补充「参考分块」或「关键词」。</div>`
+      : '';
+
   container.innerHTML = `
     <div class="card section">
       <div class="section-head">
         <h3>评测结果</h3>
-        <span class="muted">${escapeHtml(run.config?.mode ?? 'hybrid')} · Top ${k} · ${metrics.cases ?? 0} 条有效用例</span>
+        <span class="muted">${escapeHtml(run.config?.mode ?? 'hybrid')} · Top ${k} · ${metrics.cases ?? 0} 条有效用例${labelNote}</span>
       </div>
       <div class="metric-grid">
         ${metricCard(`Hit@${k}`, fmtPct(metrics.hit_rate), '至少命中一个相关分块')}
-        ${metricCard(`Recall@${k}`, fmtPct(metrics.recall), '相关文档/关键词被召回比例')}
+        ${metricCard(`Recall@${k}`, fmtPct(metrics.recall), '相关文档/分块/关键词被召回比例')}
         ${metricCard('MRR', fmtNum(metrics.mrr), '首个相关结果的平均排名')}
         ${metricCard(`nDCG@${k}`, fmtNum(metrics.ndcg), '排序质量')}
         ${metricCard('P95 延迟', `${Math.round(metrics.latency_p95 ?? 0)} ms`, `P50 ${Math.round(metrics.latency_p50 ?? 0)} ms`)}
       </div>
+      ${labelWarning}
     </div>
 
     <div class="card section">
@@ -1164,6 +1198,10 @@ async function openCaseModal() {
         <input id="case-kw" type="text" placeholder="0.8MPa, 工作压力" />
       </div>
       <div class="field">
+        <label for="case-chunks">参考分块 ID（可选，用逗号分隔）</label>
+        <input id="case-chunks" type="text" placeholder="在文档「分块」预览里复制 ID，指标会更准" />
+      </div>
+      <div class="field">
         <label>参考文档（可选，可多选）</label>
         ${ready.length
           ? `<div class="check-list">${ready.map((doc) => `
@@ -1171,7 +1209,7 @@ async function openCaseModal() {
             </div>`
           : '<p class="faint" style="font-size:12.5px">该知识库还没有已就绪的文档</p>'}
       </div>
-      <p class="faint" style="font-size:12px">关键词或参考文档至少填写一项，否则该用例无法计算指标。</p>`,
+      <p class="faint" style="font-size:12px">关键词 / 参考分块 / 参考文档至少填写一项。分块级标注最准，文档级标注会把同文档的所有分块都算作相关。</p>`,
     footer: '<button class="btn" data-cancel>取消</button><button class="btn primary" data-save>保存</button>',
     onMount: (root, close) => {
       $('#case-q', root).focus();
@@ -1182,21 +1220,30 @@ async function openCaseModal() {
           .split(/[,，;；]/)
           .map((item) => item.trim())
           .filter(Boolean);
+        const chunkIds = $('#case-chunks', root).value
+          .split(/[,，;；\s]+/)
+          .map((item) => item.trim())
+          .filter(Boolean);
         const reference = $$('input[type="checkbox"]:checked', root).map((input) => input.value);
 
         if (!question) {
           toast('请输入问题', 'warn');
           return;
         }
-        if (!keywords.length && !reference.length) {
-          toast('请至少填写关键词或选择参考文档', 'warn');
+        if (!keywords.length && !reference.length && !chunkIds.length) {
+          toast('请至少填写关键词、参考分块或选择参考文档', 'warn');
           return;
         }
 
         try {
           const created = await api(`/eval/datasets/${dataset.id}/cases`, {
             method: 'POST',
-            json: { question, keywords, reference_doc_ids: reference },
+            json: {
+              question,
+              keywords,
+              reference_doc_ids: reference,
+              reference_chunk_ids: chunkIds,
+            },
           });
           close();
           state.cases.push(created);

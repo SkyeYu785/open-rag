@@ -31,6 +31,23 @@ def _int(name: str, default: int) -> int:
         return default
 
 
+def _float(name: str, default: float) -> float:
+    raw = _str(name)
+    if not raw:
+        return default
+    try:
+        return float(raw)
+    except ValueError:
+        return default
+
+
+def _bool(name: str, default: bool) -> bool:
+    raw = _str(name).lower()
+    if not raw:
+        return default
+    return raw in {"1", "true", "yes", "on"}
+
+
 @dataclass(frozen=True)
 class Settings:
     data_dir: Path
@@ -45,6 +62,19 @@ class Settings:
     parent_tokens: int
     overlap_tokens: int
     max_upload_mb: int
+    # reranker
+    rerank_provider: str
+    rerank_model: str
+    rerank_base_url: str
+    rerank_path: str
+    rerank_api_key: str
+    rerank_timeout: float
+    rerank_candidates: int
+    # retrieval filtering
+    min_score: float
+    relative_cutoff: float
+    max_per_doc: int
+    dedupe_parent: bool
     cors_origins: tuple[str, ...]
     version: str = VERSION
 
@@ -79,6 +109,17 @@ def get_settings() -> Settings:
         parent_tokens=parent_tokens,
         overlap_tokens=overlap_tokens,
         max_upload_mb=max(1, _int("OPENRAG_MAX_UPLOAD_MB", 50)),
+        rerank_provider=_str("OPENRAG_RERANK_PROVIDER", "none").lower(),
+        rerank_model=_str("OPENRAG_RERANK_MODEL", "BAAI/bge-reranker-v2-m3"),
+        rerank_base_url=_str("OPENRAG_RERANK_BASE_URL", "http://127.0.0.1:8082/v1").rstrip("/"),
+        rerank_path=_str("OPENRAG_RERANK_PATH", "/rerank"),
+        rerank_api_key=_str("OPENRAG_RERANK_API_KEY"),
+        rerank_timeout=_float("OPENRAG_RERANK_TIMEOUT", 30.0),
+        rerank_candidates=max(1, _int("OPENRAG_RERANK_CANDIDATES", 30)),
+        min_score=_float("OPENRAG_MIN_SCORE", 0.0),
+        relative_cutoff=min(1.0, max(0.0, _float("OPENRAG_RELATIVE_CUTOFF", 0.75))),
+        max_per_doc=max(0, _int("OPENRAG_MAX_PER_DOC", 0)),
+        dedupe_parent=_bool("OPENRAG_DEDUPE_PARENT", True),
         cors_origins=origins or ("*",),
     )
     settings.ensure_dirs()

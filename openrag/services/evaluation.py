@@ -32,7 +32,13 @@ def _percentile(values: list[float], q: float) -> float:
     return float(np.percentile(np.asarray(values, dtype=np.float64), q))
 
 
-def _case_metrics(hits: list[dict], references: set[str], keywords: list[str], k: int) -> tuple[dict, list[bool]]:
+def _case_metrics(
+    hits: list[dict],
+    references: set[str],
+    reference_chunks: set[str],
+    keywords: list[str],
+    k: int,
+) -> tuple[dict, list[bool]]:
     lowercase_keywords = [kw.strip().lower() for kw in keywords if kw and kw.strip()]
 
     # ``flags`` marks every chunk that touches the ground truth (used for hit/MRR
@@ -44,21 +50,30 @@ def _case_metrics(hits: list[dict], references: set[str], keywords: list[str], k
     covered: set[tuple[str, str]] = set()
 
     for hit in hits:
-        # judge what the generator would actually read: the matched child plus
-        # its parent context (small-to-big retrieval)
-        text = (hit["text"] + "\n" + (hit.get("context") or "")).lower()
-        units: set[tuple[str, str]] = set()
-        if hit["doc_id"] in references:
-            units.add(("doc", hit["doc_id"]))
-        for keyword in lowercase_keywords:
-            if keyword in text:
-                units.add(("keyword", keyword))
+        if reference_chunks:
+            units: set[tuple[str, str]] = (
+                {("chunk", hit["chunk_id"])} if hit["chunk_id"] in reference_chunks else set()
+            )
+        else:
+            # judge what the generator would actually read: the matched child plus
+            # its parent context (small-to-big retrieval)
+            text = (hit["text"] + "\n" + (hit.get("context") or "")).lower()
+            units = set()
+            if hit["doc_id"] in references:
+                units.add(("doc", hit["doc_id"]))
+            for keyword in lowercase_keywords:
+                if keyword in text:
+                    units.add(("keyword", keyword))
 
         flags.append(bool(units))
         gains.append(1.0 if units - covered else 0.0)
         covered |= units
 
-    if references:
+    if reference_chunks:
+        gold_count = len(reference_chunks)
+        retrieved_chunks = {hit["chunk_id"] for hit in hits}
+        recall = len(retrieved_chunks & reference_chunks) / gold_count
+    elif references:
         gold_count = len(references)
         retrieved_docs = {hit["doc_id"] for hit in hits}
         recall = len(retrieved_docs & references) / gold_count
@@ -118,18 +133,26 @@ def execute_run(run_id: str) -> None:
         scored: list[dict] = []
         latencies: list[float] = []
         skipped = 0
+        chunk_labeled = 0
+        doc_labeled = 0
+        keyword_labeled = 0
 
         for case in cases:
             references = set(db.loads(case["reference_docs"], []))
+            reference_chunks = set(db.loads(case.get("reference_chunks"), []))
             keywords = db.loads(case["keywords"], [])
-            if not references and not keywords:
+            if not references and not reference_chunks and not keywords:
                 skipped += 1
                 continue
 
-            hits, _, latency_ms = retrieval.retrieve(
+            chunk_labeled += 1 if reference_chunks else 0
+            doc_labeled += 1 if references else 0
+            keyword_labeled += 1 if keywords else 0
+
+            hits, _, latency_ms, _ = retrieval.retrieve(
                 kb_id, case["question"], top_k=top_k, mode=mode, index=index
             )
-            metrics, flags = _case_metrics(hits, references, keywords, top_k)
+            metrics, flags = _case_metrics(hits, references, reference_chunks, keywords, top_k)
             latencies.append(latency_ms)
 
             serialised_hits = []
@@ -170,6 +193,9 @@ def execute_run(run_id: str) -> None:
             "k": float(top_k),
             "cases": float(len(scored)),
             "skipped": float(skipped),
+            "chunk_labeled": float(chunk_labeled),
+            "doc_labeled": float(doc_labeled),
+            "keyword_labeled": float(keyword_labeled),
             "hit_rate": round(aggregate["hit"], 4),
             "recall": round(aggregate["recall"], 4),
             "mrr": round(aggregate["mrr"], 4),
