@@ -582,7 +582,8 @@ async function runSearch(event) {
     });
 
     if (!result.hits.length) {
-      box.innerHTML = '<p class="faint">没有检索到相关内容，试试换个说法或先上传文档。</p>';
+      const filtered = result.dropped ? `（已过滤 ${result.dropped} 条低分结果）` : '';
+      box.innerHTML = `<p class="faint">没有检索到相关内容${filtered}，可以换个说法，或调低 min_score。</p>`;
       return;
     }
 

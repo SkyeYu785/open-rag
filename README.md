@@ -198,7 +198,7 @@ curl -s -X POST localhost:8000/v1/retrieve \
 | `OPENRAG_RERANK_MODEL` | `BAAI/bge-reranker-v2-m3` | 模型名 |
 | `OPENRAG_RERANK_API_KEY` | – | Bearer token |
 | `OPENRAG_RERANK_CANDIDATES` | `30` | 送入 rerank 的候选数 |
-| `OPENRAG_MIN_SCORE` | `0` | 绝对分阈值，0 关闭 |
+| `OPENRAG_MIN_SCORE` | `0.01` | 绝对分阈值，低于该值的分块丢弃 |
 | `OPENRAG_RELATIVE_CUTOFF` | `0.75` | 低于 `top × 该值` 的结果丢弃 |
 | `OPENRAG_MAX_PER_DOC` | `0` | 每文档最多返回的分块数，0 不限 |
 | `OPENRAG_DEDUPE_PARENT` | `true` | 同一父块只保留最高分子块 |
@@ -241,7 +241,9 @@ OPENRAG_RERANK_CANDIDATES=30
 
 请求体 `{"model","query","documents","top_n"}`，响应 `{"results":[{"index","relevance_score"}]}`（也兼容 TEI 的顶层数组）。服务返回 logits 时会自动 sigmoid 归一化，阈值才能通用。本地模型用 `OPENRAG_RERANK_PROVIDER=local` + `pip install -e ".[local]"`。
 
-**分数异常排查**：如果响应里出现 `rerank_warning`，或 rerank 分数长期在 `1e-6` 以下，说明服务并不真正支持这个模型。典型例子是 **llama.cpp 的 `/v1/rerank` 只实现 classification-head 重排模型**（bge-reranker-v2-m3 等），而 Qwen3-Reranker 是生成式 yes/no 打分，需要 vLLM / SGLang 部署。检测到分数不可用时系统会自动回退到混合检索，并在响应与 UI 中提示，不会污染排序。
+**分数异常排查**：系统在首次使用 reranker 时，会用一对**完全相同**的文本做自检（正常模型应接近 1.0）。自检不通过才会判定服务不可用并回退到混合检索，同时在 `rerank_warning` 和 UI 中提示。典型例子是 **llama.cpp 的 `/v1/rerank` 只实现 classification-head 重排模型**（bge-reranker-v2-m3 等），而 Qwen3-Reranker 是生成式 yes/no 打分，需要 vLLM / SGLang 部署。
+
+自检通过后，模型给低分就代表「真的不相关」：低于 `OPENRAG_MIN_SCORE`（默认 0.01）的结果会被过滤掉，可能返回 0 条，这是正确行为，不会被误判成服务故障。
 
 ## 目录结构
 

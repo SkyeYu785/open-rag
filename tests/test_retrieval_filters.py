@@ -1,8 +1,17 @@
 from __future__ import annotations
 
+import pytest
 from conftest import SAMPLE, upload
 
+from openrag.services import rerank as rerank_module
 from openrag.services.retrieval import Filters, _apply_filters
+
+
+@pytest.fixture(autouse=True)
+def reset_rerank_health():
+    rerank_module._health.clear()
+    yield
+    rerank_module._health.clear()
 
 
 def _hit(chunk_id: str, doc_id: str, parent_id: str, vector: float, keyword: float = 0.0) -> dict:
@@ -136,6 +145,31 @@ def test_degenerate_rerank_scores_fall_back(client, kb, monkeypatch):
 
     assert payload["rerank_applied"] is False
     assert payload["rerank_warning"]
-    assert "接近 0" in payload["rerank_warning"]
+    assert "自检" in payload["rerank_warning"]
     assert payload["filter_score"] == "vector"
     assert payload["hits"]
+
+
+def test_trusted_reranker_with_no_match_returns_no_hits(client, kb, monkeypatch):
+    upload(client, kb["id"], "E-201.md", SAMPLE)
+
+    class LowScoreReranker:
+        name = "lowscore"
+        model = "lowscore"
+
+        def rerank(self, query: str, documents: list[str]) -> list[float]:
+            if len(documents) == 1:  # self-test pair must pass
+                return [0.99]
+            return [1e-6 for _ in documents]
+
+    monkeypatch.setattr("openrag.services.retrieval.get_reranker", lambda: LowScoreReranker())
+
+    payload = client.post(
+        "/v1/retrieve",
+        json={"kb_id": kb["id"], "query": "今天天气怎么样", "top_k": 5, "min_score": 0.01},
+    ).json()
+
+    assert payload["rerank_applied"] is True
+    assert payload["hits"] == []
+    assert payload["returned"] == 0
+    assert payload["dropped"] == payload["recalled"]

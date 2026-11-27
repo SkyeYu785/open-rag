@@ -21,6 +21,8 @@ from __future__ import annotations
 
 import logging
 import math
+import threading
+import time
 from functools import lru_cache
 
 from ..config import get_settings
@@ -44,11 +46,17 @@ class RerankUnusable(RuntimeError):
     """The service answered, but the scores cannot rank anything."""
 
 
-# A working cross-encoder gives clearly-positive scores to relevant pairs.
+# A cross-encoder must score a query against itself near the top of the scale.
 # Generative rerankers served by the wrong runtime (e.g. Qwen3-Reranker on
-# llama.cpp, which only implements classification-head rerankers) come back as
-# ~1e-7 for every document; ranking on that is pure noise.
-MIN_USABLE_TOP = 1e-4
+# llama.cpp, which only implements classification-head rerankers) return ~1e-7
+# for *every* pair, including identical text, and would silently scramble the
+# ranking. A self-test separates "broken service" from "no relevant document".
+SELF_TEST_QUERY = "rerank 自检：设备最大工作压力是多少"
+SELF_TEST_MIN_SCORE = 0.5
+_SELF_TEST_RETRY_SECONDS = 30.0
+
+_health: dict[str, tuple[bool, float, str | None]] = {}
+_health_lock = threading.Lock()
 
 
 def _normalise(scores: list[float]) -> list[float]:
@@ -61,17 +69,49 @@ def _normalise(scores: list[float]) -> list[float]:
 
 
 def validate_scores(scores: list[float]) -> None:
-    """Reject rerank output that cannot discriminate between documents."""
+    """Reject empty or non-finite rerank output."""
     if not scores:
         raise RerankUnusable("rerank 服务没有返回任何分数")
-    top = max(scores)
-    if top < MIN_USABLE_TOP:
-        raise RerankUnusable(
-            f"rerank 服务返回的分数全部接近 0（最高 {top:.2e}），无法用于排序。"
-            "通常是服务不支持该 reranker 模型：llama.cpp 只实现了 classification-head "
-            "类重排模型（如 bge-reranker-v2-m3），生成式 yes/no 模型（Qwen3-Reranker）"
-            "应改用 vLLM / SGLang 部署。"
+    if not all(math.isfinite(score) for score in scores):
+        raise RerankUnusable("rerank 服务返回了非法分数")
+
+
+def reranker_status(reranker: Reranker) -> tuple[bool, str | None]:
+    """Self-test the reranker once (with a retry window) and cache the verdict."""
+    key = getattr(reranker, "signature", None) or (
+        f"{getattr(reranker, 'name', type(reranker).__name__)}:{getattr(reranker, 'model', '')}"
+    )
+    now = time.monotonic()
+    with _health_lock:
+        cached = _health.get(key)
+        if cached is not None:
+            ok, expires, message = cached
+            if ok or now < expires:
+                return ok, message
+
+    message: str | None = None
+    try:
+        scores = reranker.rerank(SELF_TEST_QUERY, [SELF_TEST_QUERY])
+        top = max(scores) if scores else 0.0
+    except Exception as exc:  # noqa: BLE001
+        top = 0.0
+        message = f"rerank 服务调用失败（{exc}），已回退到混合检索。"
+
+    if top >= SELF_TEST_MIN_SCORE:
+        message = None
+    else:
+        message = message or (
+            f"rerank 服务自检未通过：完全相同的文本只得到 {top:.4f} 分。"
+            "通常是该服务不支持这个模型——llama.cpp 的 /v1/rerank 只实现 classification-head "
+            "模型（bge-reranker-v2-m3 等），Qwen3-Reranker 这类生成式模型需要 vLLM / SGLang。"
+            "已回退到混合检索。"
         )
+
+    ok = top >= SELF_TEST_MIN_SCORE
+    with _health_lock:
+        _health[key] = (ok, float("inf") if ok else now + _SELF_TEST_RETRY_SECONDS, message)
+    logger.info("reranker self-test %s (%s)", "passed" if ok else "failed", key)
+    return ok, message
 
 
 class HttpReranker(Reranker):

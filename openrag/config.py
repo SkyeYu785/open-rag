@@ -116,7 +116,7 @@ def get_settings() -> Settings:
         rerank_api_key=_str("OPENRAG_RERANK_API_KEY"),
         rerank_timeout=_float("OPENRAG_RERANK_TIMEOUT", 30.0),
         rerank_candidates=max(1, _int("OPENRAG_RERANK_CANDIDATES", 30)),
-        min_score=_float("OPENRAG_MIN_SCORE", 0.0),
+        min_score=_float("OPENRAG_MIN_SCORE", 0.01),
         relative_cutoff=min(1.0, max(0.0, _float("OPENRAG_RELATIVE_CUTOFF", 0.75))),
         max_per_doc=max(0, _int("OPENRAG_MAX_PER_DOC", 0)),
         dedupe_parent=_bool("OPENRAG_DEDUPE_PARENT", True),

@@ -19,7 +19,7 @@ from .. import db
 from ..config import get_settings
 from .bm25 import BM25Index
 from .embedding import get_embedder
-from .rerank import get_reranker, validate_scores
+from .rerank import get_reranker, reranker_status, validate_scores
 
 logger = logging.getLogger(__name__)
 
@@ -284,10 +284,21 @@ def retrieve(
     filters = _resolve_filters(min_score, relative_cutoff, max_per_doc, dedupe_parent)
 
     reranker = None
+    rerank_warning: str | None = None
     try:
-        reranker = get_reranker()
+        candidate = get_reranker()
     except Exception as exc:  # noqa: BLE001 - a broken rerank config must not break search
+        candidate = None
+        rerank_warning = f"reranker 配置错误：{exc}"
         logger.warning("reranker unavailable, falling back to hybrid ranking: %s", exc)
+
+    if candidate is not None:
+        usable, warning = reranker_status(candidate)
+        if usable:
+            reranker = candidate
+        else:
+            rerank_warning = warning
+            logger.warning("reranker self-test failed, falling back to hybrid ranking: %s", warning)
 
     vector_scores = index.matrix @ query_vector
     keyword_scores = index.bm25.scores(query)
@@ -339,7 +350,6 @@ def retrieve(
         )
 
     rerank_applied = False
-    rerank_warning: str | None = None
     if reranker is not None and hits:
         try:
             rerank_scores = reranker.rerank(query, [hit["text"] for hit in hits])
