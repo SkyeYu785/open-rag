@@ -56,6 +56,10 @@ class ChunkOut(BaseModel):
     ordinal: int
     text: str
     page: int | None = None
+    tokens: int = 0
+    level: str = "child"
+    start_offset: int | None = None
+    end_offset: int | None = None
 
 
 class ChunkPage(BaseModel):
@@ -76,6 +80,7 @@ class RetrieveRequest(BaseModel):
     query: str = Field(min_length=1, max_length=4000)
     top_k: int = Field(default=6, ge=1, le=50)
     mode: RetrievalMode = "hybrid"
+    include_context: bool = True
 
 
 class RetrievalHit(BaseModel):
@@ -85,6 +90,12 @@ class RetrievalHit(BaseModel):
     ordinal: int
     text: str
     page: int | None = None
+    context: str | None = None
+    parent_id: str | None = None
+    tokens: int = 0
+    meta: dict[str, Any] = Field(default_factory=dict)
+    start_offset: int | None = None
+    end_offset: int | None = None
     score: float
     scores: dict[str, float] = Field(default_factory=dict)
 
@@ -96,7 +107,6 @@ class RetrieveResponse(BaseModel):
     total_chunks: int
     latency_ms: float
     hits: list[RetrievalHit]
-
 
 # --------------------------------------------------------------------------- #
 # evaluation

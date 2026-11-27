@@ -523,7 +523,7 @@ async function showChunks(doc, offset) {
       <div class="hit-head">
         <span class="hit-rank">#${item.ordinal + 1}</span>
         ${item.page ? `<span class="pill">第 ${item.page} 页</span>` : ''}
-        <span class="hit-score">${item.text.length} 字</span>
+        <span class="hit-score">${item.tokens || item.text.length} tokens</span>
       </div>
       <div class="hit-text">${escapeHtml(item.text)}</div>
     </div>`).join('');
@@ -589,9 +589,15 @@ async function runSearch(event) {
             <span class="hit-rank">#${index + 1}</span>
             <span class="hit-doc">${escapeHtml(hit.doc_name)}</span>
             ${hit.page ? `<span class="pill">第 ${hit.page} 页</span>` : ''}
+            ${hit.tokens ? `<span class="pill">${hit.tokens} tokens</span>` : ''}
             <span class="hit-score">${hit.score.toFixed(4)}</span>
           </div>
           <div class="hit-text">${escapeHtml(hit.text)}</div>
+          ${hit.context ? `
+            <details class="hit-context">
+              <summary>父块上下文</summary>
+              <div class="hit-text">${escapeHtml(hit.context)}</div>
+            </details>` : ''}
           <div class="hit-scores">vector ${hit.scores.vector.toFixed(3)} · keyword ${hit.scores.keyword.toFixed(2)} · fused ${hit.scores.fused.toFixed(4)}</div>
         </div>`).join('')}`;
   } catch (error) {
@@ -1007,6 +1013,7 @@ function caseResult(item, k) {
             <span>${escapeHtml(hit.doc_name)}</span>
             ${hit.page ? `<span>第 ${hit.page} 页</span>` : ''}
             <span>chunk ${hit.ordinal}</span>
+            ${hit.tokens ? `<span>${hit.tokens} tokens</span>` : ''}
             <span>score ${Number(hit.score).toFixed(4)}</span>
             <span>${hit.relevant ? '相关' : '不相关'}</span>
           </div>

@@ -56,7 +56,12 @@ def health() -> dict:
             "provider": provider,
             "model": settings.embedding_model if provider != "hash" else f"hashing-{settings.embedding_dim}",
         },
-        "chunking": {"chunk_size": settings.chunk_size, "chunk_overlap": settings.chunk_overlap},
+        "chunking": {
+            "unit": "tokens",
+            "child_tokens": settings.child_tokens,
+            "parent_tokens": settings.parent_tokens,
+            "overlap_tokens": settings.overlap_tokens,
+        },
         "max_upload_mb": settings.max_upload_mb,
     }
 

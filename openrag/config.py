@@ -41,8 +41,9 @@ class Settings:
     embedding_base_url: str
     embedding_api_key: str
     embedding_dim: int
-    chunk_size: int
-    chunk_overlap: int
+    child_tokens: int
+    parent_tokens: int
+    overlap_tokens: int
     max_upload_mb: int
     cors_origins: tuple[str, ...]
     version: str = VERSION
@@ -60,6 +61,11 @@ def get_settings() -> Settings:
 
     origins = tuple(o.strip() for o in _str("OPENRAG_CORS_ORIGINS", "*").split(",") if o.strip())
 
+    # OPENRAG_CHUNK_SIZE is the pre-v0.2 name and is kept as an alias.
+    child_tokens = max(48, _int("OPENRAG_CHILD_TOKENS", _int("OPENRAG_CHUNK_SIZE", 320)))
+    parent_tokens = max(child_tokens * 2, _int("OPENRAG_PARENT_TOKENS", 1400))
+    overlap_tokens = max(0, min(_int("OPENRAG_CHUNK_OVERLAP", 48), child_tokens // 3))
+
     settings = Settings(
         data_dir=data_dir,
         db_path=data_dir / "openrag.db",
@@ -69,8 +75,9 @@ def get_settings() -> Settings:
         embedding_base_url=_str("OPENRAG_EMBEDDING_BASE_URL", "https://api.openai.com/v1").rstrip("/"),
         embedding_api_key=_str("OPENRAG_EMBEDDING_API_KEY"),
         embedding_dim=_int("OPENRAG_EMBEDDING_DIM", 512),
-        chunk_size=max(120, _int("OPENRAG_CHUNK_SIZE", 700)),
-        chunk_overlap=max(0, _int("OPENRAG_CHUNK_OVERLAP", 100)),
+        child_tokens=child_tokens,
+        parent_tokens=parent_tokens,
+        overlap_tokens=overlap_tokens,
         max_upload_mb=max(1, _int("OPENRAG_MAX_UPLOAD_MB", 50)),
         cors_origins=origins or ("*",),
     )

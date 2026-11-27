@@ -47,15 +47,18 @@ CREATE TABLE IF NOT EXISTS chunks (
     kb_id         TEXT NOT NULL REFERENCES knowledge_bases(id) ON DELETE CASCADE,
     doc_id        TEXT NOT NULL REFERENCES documents(id) ON DELETE CASCADE,
     ordinal       INTEGER NOT NULL,
+    level         TEXT NOT NULL DEFAULT 'child',
+    parent_id     TEXT,
     text          TEXT NOT NULL,
     page          INTEGER,
+    token_count   INTEGER NOT NULL DEFAULT 0,
+    start_offset  INTEGER,
+    end_offset    INTEGER,
     embedding     BLOB,
     dim           INTEGER NOT NULL DEFAULT 0,
     meta          TEXT NOT NULL DEFAULT '{}',
     embedding_sig TEXT NOT NULL DEFAULT ''
 );
-CREATE INDEX IF NOT EXISTS idx_chunks_kb ON chunks(kb_id);
-CREATE INDEX IF NOT EXISTS idx_chunks_doc ON chunks(doc_id, ordinal);
 
 CREATE TABLE IF NOT EXISTS eval_datasets (
     id            TEXT PRIMARY KEY,
@@ -104,9 +107,32 @@ CREATE INDEX IF NOT EXISTS idx_results_run ON eval_results(run_id);
 
 _local = threading.local()
 
+# Columns added after v0.1 so existing databases keep working without a rebuild.
+_COLUMN_MIGRATIONS: dict[str, dict[str, str]] = {
+    "chunks": {
+        "level": "TEXT NOT NULL DEFAULT 'child'",
+        "parent_id": "TEXT",
+        "token_count": "INTEGER NOT NULL DEFAULT 0",
+        "start_offset": "INTEGER",
+        "end_offset": "INTEGER",
+    },
+}
+
 
 def now() -> str:
     return datetime.now(timezone.utc).isoformat(timespec="seconds")
+
+
+def _migrate(conn: sqlite3.Connection) -> None:
+    for table, columns in _COLUMN_MIGRATIONS.items():
+        existing = {row[1] for row in conn.execute(f"PRAGMA table_info({table})")}
+        for name, ddl in columns.items():
+            if name not in existing:
+                conn.execute(f"ALTER TABLE {table} ADD COLUMN {name} {ddl}")
+    # indexes are created after the columns above exist (old databases may lack them)
+    conn.execute("CREATE INDEX IF NOT EXISTS idx_chunks_kb ON chunks(kb_id, level)")
+    conn.execute("CREATE INDEX IF NOT EXISTS idx_chunks_doc ON chunks(doc_id, level, ordinal)")
+    conn.execute("CREATE INDEX IF NOT EXISTS idx_chunks_parent ON chunks(parent_id)")
 
 
 def get_conn() -> sqlite3.Connection:
@@ -126,6 +152,7 @@ def get_conn() -> sqlite3.Connection:
 def init_db() -> None:
     conn = get_conn()
     conn.executescript(SCHEMA)
+    _migrate(conn)
     conn.commit()
 
 

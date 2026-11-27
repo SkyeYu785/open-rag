@@ -6,7 +6,8 @@
 
 ```
 文档入库  PDF / DOCX / XLSX / CSV / Markdown / TXT / HTML
-检索      向量（dense）+ BM25（sparse），RRF 融合，返回可引用的分块与页码
+分块      结构感知，parent（小节/整表）+ child（检索单元），token 口径计量
+检索      向量（dense）+ BM25（sparse），RRF 融合，命中 child、返回 parent 上下文
 评测      Hit@k / Recall@k / MRR / nDCG@k，逐条可追溯到检索结果
 ```
 
@@ -14,6 +15,8 @@
 
 - **零外部服务**：SQLite 存元数据与向量，进程内暴力检索；不需要 Milvus / ES / Redis
 - **中文友好**：BM25 使用汉字 uni/bi-gram，无需 jieba；混合检索对中文短查询更稳
+- **父子块检索**：小块建索引保证精度，命中后回填父块保证上下文完整
+- **表格行展开**：DOCX / XLSX / CSV 的表格按 `列名: 值` 渲染，表头随每个分块重复
 - **可插拔 embedding**：内置离线 hash 向量兜底，支持 sentence-transformers（BGE 等）与任意 OpenAI 兼容接口
 - **可评测**：自带标注数据管理与评测页，改 chunk 策略 / 换模型后能立刻看到指标变化
 - **两个页面**：知识库文档管理、检索评测；无构建步骤（原生 ES Module + CSS）
@@ -92,7 +95,7 @@ python -m openrag
 | GET/DELETE | `/v1/documents/{id}` | 文档详情 / 删除 |
 | POST | `/v1/documents/{id}/reindex` | 重新解析与向量化 |
 | GET | `/v1/documents/{id}/chunks` | 分块预览（`offset` / `limit`） |
-| POST | `/v1/retrieve` | 检索：`{kb_id, query, top_k, mode}` |
+| POST | `/v1/retrieve` | 检索：`{kb_id, query, top_k, mode, include_context}` |
 | GET/POST | `/v1/eval/datasets` | 评测集列表 / 创建 |
 | GET/POST | `/v1/eval/datasets/{id}/cases` | 用例列表 / 添加 |
 | POST | `/v1/eval/datasets/{id}/runs` | 发起一次评测（异步） |
@@ -129,6 +132,12 @@ curl -s -X POST localhost:8000/v1/retrieve \
       "doc_name": "E-201离心泵手册.md",
       "page": null,
       "text": "[E-201 离心泵 > 技术参数]\n型号 E-201，额定流量 120 m³/h……最大工作压力 0.8MPa……",
+      "context": "[E-201 离心泵 > 技术参数]\n型号 E-201……（父块全文）",
+      "parent_id": "…",
+      "tokens": 214,
+      "meta": {"heading": "E-201 离心泵 > 技术参数", "section": 0},
+      "start_offset": 42,
+      "end_offset": 386,
       "score": 0.0328,
       "scores": {"vector": 0.61, "keyword": 4.27, "fused": 0.0328}
     }
@@ -155,7 +164,7 @@ curl -s -X POST localhost:8000/v1/retrieve \
 | MRR | 第一条相关结果排名的倒数均值；衡量"排得靠不靠前" |
 | nDCG@k | 考虑排序位置的相关性质量；衡量"整体排序好不好" |
 
-建议先用 **20–50 条真实问题**建立起基线，再调 `OPENRAG_CHUNK_SIZE`、`top_k`、embedding 模型。指标不动就不要继续加功能。
+建议先用 **20–50 条真实问题**建立起基线，再调 `OPENRAG_CHILD_TOKENS`、`top_k`、embedding 模型。指标不动就不要继续加功能。
 
 ## 配置
 
@@ -169,13 +178,24 @@ curl -s -X POST localhost:8000/v1/retrieve \
 | `OPENRAG_EMBEDDING_BASE_URL` | `https://api.openai.com/v1` | 仅 `openai` provider |
 | `OPENRAG_EMBEDDING_API_KEY` | – | 仅 `openai` provider |
 | `OPENRAG_EMBEDDING_DIM` | `512` | 仅 `hash` provider 的维度 |
-| `OPENRAG_CHUNK_SIZE` | `700` | 分块目标长度（字符） |
-| `OPENRAG_CHUNK_OVERLAP` | `100` | 相邻分块重叠字符数 |
+| `OPENRAG_CHILD_TOKENS` | `320` | 检索单元（child）目标长度，token |
+| `OPENRAG_PARENT_TOKENS` | `1400` | 父块（parent）目标长度，token |
+| `OPENRAG_CHUNK_OVERLAP` | `48` | 相邻 child 的重叠 token 数 |
 | `OPENRAG_MAX_UPLOAD_MB` | `50` | 单文件大小上限 |
 | `OPENRAG_HOST` / `OPENRAG_PORT` | `127.0.0.1` / `8000` | 监听地址 |
 | `OPENRAG_CORS_ORIGINS` | `*` | 逗号分隔的允许来源 |
 
-分块策略：按 Markdown 标题切段 → 按句子边界切分 → 合并到目标长度 → 相邻块保留重叠；标题路径会作为前缀写入分块文本，便于检索和引用。
+### 分块与上下文（parent / child）
+
+解析器先还原结构（Markdown 标题、DOCX 段落与表格、XLSX/CSV 表格），再在 **token** 口径下分块（`services/tokens.py`：CJK 1 字 ≈ 1 token，拉丁 4 字符 ≈ 1 token）：
+
+1. **按标题切块**：维护 `A > B` 标题路径，跨段落、跨表格延续；路径作为前缀写进每个分块，既参与召回也作为引用信息；
+2. **表格转行**：每行渲染成 `型号: E-201；压力: 0.8MPa`，表头在**每个分块**重复，单独一行也能读懂；
+3. **两层粒度**：parent 是标题小节 / 整张表（默认 1400 tokens），child 是检索单元（默认 320 tokens，重叠 48）；
+4. **父子回填**：只索引 child；检索命中后 `context` 返回 parent，检索精度和生成上下文两头都要；
+5. **可回溯**：每块带 `page`、标题路径和 `start_offset/end_offset`（相对所在解析段）。
+
+> `OPENRAG_CHUNK_SIZE` 仍作为 `OPENRAG_CHILD_TOKENS` 的别名保留，但语义已从「字符」改为「token」。
 
 ## 目录结构
 
@@ -187,8 +207,9 @@ openrag/
   models.py            Pydantic 请求/响应模型
   api/                 knowledge_bases · documents · retrieval · evaluation
   services/
-    parsing.py         PDF / DOCX / XLSX / CSV / HTML / 文本解析
-    chunking.py        标题感知的分块
+    parsing.py         PDF / DOCX / XLSX / CSV / HTML 解析（表格结构化）
+    chunking.py       parent/child 分块、表格行展开、token 计量
+    tokens.py         中英混排的 token 估算（可选 tiktoken）
     embedding.py       hash / sentence-transformers / openai
     bm25.py            中文 uni/bi-gram BM25
     retrieval.py       向量 + BM25 + RRF
@@ -211,6 +232,7 @@ pytest
 
 - **单机 SQLite + 内存暴力检索**：目标是单机 10 万级分块以内、开箱即用。再大请换 Milvus / Qdrant（`retrieval.py` 的 `get_index` 是唯一入口）
 - **不做 OCR**：扫描件 PDF 会明确报错，而不是返回空结果
+- **表格结构只覆盖 DOCX / XLSX / CSV**：Markdown 与 HTML 里的表格仍按普通文本处理；PDF 没有版面分析，标题与表格都会退化成纯文本
 - **没有鉴权与多租户**：请只在内网或反向代理之后暴露
 - **没有 LLM 生成**：本项目的产出是「带分数的上下文」，生成交给调用方，避免把模型选择绑定进检索层
 - **BM25 索引在进程内构建**：知识库发生变化时按 `version` 自动重建，重启后首次查询会重建一次
@@ -219,7 +241,7 @@ pytest
 
 - [ ] 可插拔向量后端（Qdrant / pgvector）
 - [ ] 扫描件 OCR（PaddleOCR / MinerU）与表格结构化
-- [ ] 分块策略可配置（语义分块、父子块）
+- [ ] 语义分块与可配置窗口（滑窗 / 句窗 / 章节树）
 - [ ] 评测：LLM-as-judge 的答案质量指标、A/B 对比视图
 - [ ] API Key 鉴权与知识库级权限
 

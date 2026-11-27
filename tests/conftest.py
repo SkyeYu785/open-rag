@@ -13,8 +13,9 @@ sys.path.insert(0, str(ROOT))
 os.environ["OPENRAG_DATA_DIR"] = tempfile.mkdtemp(prefix="openrag-test-")
 os.environ["OPENRAG_EMBEDDING_PROVIDER"] = "hash"
 os.environ["OPENRAG_EMBEDDING_DIM"] = "256"
-os.environ["OPENRAG_CHUNK_SIZE"] = "320"
-os.environ["OPENRAG_CHUNK_OVERLAP"] = "40"
+os.environ["OPENRAG_CHILD_TOKENS"] = "120"
+os.environ["OPENRAG_PARENT_TOKENS"] = "400"
+os.environ["OPENRAG_CHUNK_OVERLAP"] = "20"
 
 import pytest  # noqa: E402
 from fastapi.testclient import TestClient  # noqa: E402

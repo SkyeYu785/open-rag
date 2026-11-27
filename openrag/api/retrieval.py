@@ -21,6 +21,7 @@ def retrieve(payload: RetrieveRequest) -> dict:
             query=payload.query,
             top_k=payload.top_k,
             mode=payload.mode,
+            include_context=payload.include_context,
         )
     except retrieval.IndexMismatch as exc:
         raise HTTPException(status_code=409, detail=str(exc)) from exc

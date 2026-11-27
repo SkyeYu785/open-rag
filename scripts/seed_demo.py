@@ -7,6 +7,7 @@ Usage::
 
 from __future__ import annotations
 
+import io
 import sys
 import uuid
 from pathlib import Path
@@ -14,6 +15,8 @@ from pathlib import Path
 ROOT = Path(__file__).resolve().parents[1]
 if str(ROOT) not in sys.path:
     sys.path.insert(0, str(ROOT))
+
+from openpyxl import Workbook  # noqa: E402
 
 from openrag import db  # noqa: E402
 from openrag.config import get_settings  # noqa: E402
@@ -79,7 +82,33 @@ CASES = [
     {"question": "机械密封应该多久更换一次？", "keywords": ["2000 小时"]},
     {"question": "空压机排气温度超过 100℃ 要检查哪些部件？", "keywords": ["冷却器", "润滑油位"]},
     {"question": "进入有限空间作业前需要办理什么手续？", "keywords": ["作业许可"]},
+    {"question": "机械密封的安全库存是多少？", "keywords": ["12 套"]},
 ]
+
+SPARE_PARTS = {
+    "title": "备件台账",
+    "headers": ["备件名称", "适配设备", "安全库存", "采购周期"],
+    "rows": [
+        ["机械密封", "E-201 离心泵", "12 套", "30 天"],
+        ["空气滤芯", "GA-75 空压机", "20 件", "15 天"],
+        ["扭矩扳手 T-30", "通用工具", "6 把", "45 天"],
+    ],
+}
+
+
+def _documents() -> list[tuple[str, str, bytes]]:
+    documents = [(name, ".md", content.encode("utf-8")) for name, content in DOCUMENTS.items()]
+
+    workbook = Workbook()
+    sheet = workbook.active
+    sheet.title = SPARE_PARTS["title"]
+    sheet.append(SPARE_PARTS["headers"])
+    for row in SPARE_PARTS["rows"]:
+        sheet.append(row)
+    buffer = io.BytesIO()
+    workbook.save(buffer)
+    documents.append(("备件台账.xlsx", ".xlsx", buffer.getvalue()))
+    return documents
 
 
 def main() -> None:
@@ -100,17 +129,17 @@ def main() -> None:
         (kb_id, KB_NAME, "示例数据：设备手册、运维规程与安全规范", timestamp, timestamp),
     )
 
-    for name, content in DOCUMENTS.items():
+    for name, ext, payload in _documents():
         doc_id = uuid.uuid4().hex
-        path = settings.upload_dir / f"{doc_id}.md"
-        path.write_text(content, encoding="utf-8")
+        path = settings.upload_dir / f"{doc_id}{ext}"
+        path.write_bytes(payload)
         db.execute(
             """
             INSERT INTO documents
                 (id, kb_id, name, path, ext, size, status, error, chunk_count, char_count, created_at, updated_at)
-            VALUES (?, ?, ?, ?, '.md', ?, 'pending', NULL, 0, 0, ?, ?)
+            VALUES (?, ?, ?, ?, ?, ?, 'pending', NULL, 0, 0, ?, ?)
             """,
-            (doc_id, kb_id, name, str(path), path.stat().st_size, timestamp, timestamp),
+            (doc_id, kb_id, name, str(path), ext, len(payload), timestamp, timestamp),
         )
         ingestion.process_document(doc_id)
         status = db.query_one("SELECT status, chunk_count FROM documents WHERE id = ?", (doc_id,))

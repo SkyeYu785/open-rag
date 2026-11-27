@@ -1,7 +1,13 @@
-"""Hybrid retrieval: dense vectors + BM25, fused with Reciprocal Rank Fusion."""
+"""Hybrid retrieval over child chunks, with parent blocks as context.
+
+Children are indexed (dense + BM25, fused with Reciprocal Rank Fusion); the API
+returns the matched child plus its parent block, which is what a generator
+should actually read (small-to-big retrieval).
+"""
 
 from __future__ import annotations
 
+import json
 import threading
 import time
 from dataclasses import dataclass
@@ -30,6 +36,12 @@ class KBIndex:
     doc_names: list[str]
     ordinals: list[int]
     pages: list[int | None]
+    tokens: list[int]
+    starts: list[int | None]
+    ends: list[int | None]
+    metas: list[dict]
+    parent_ids: list[str | None]
+    parent_texts: list[str | None]
     matrix: np.ndarray
     bm25: BM25Index
 
@@ -49,11 +61,14 @@ def invalidate(kb_id: str | None = None) -> None:
 def _build(kb_id: str, version: int) -> KBIndex:
     rows = db.query_all(
         """
-        SELECT c.id, c.doc_id, c.ordinal, c.text, c.page, c.embedding, c.dim, c.embedding_sig,
-               d.name AS doc_name
+        SELECT c.id, c.doc_id, c.ordinal, c.text, c.page, c.token_count,
+               c.start_offset, c.end_offset, c.meta, c.parent_id,
+               c.embedding, c.dim, c.embedding_sig,
+               d.name AS doc_name, p.text AS parent_text
         FROM chunks c
         JOIN documents d ON d.id = c.doc_id
-        WHERE c.kb_id = ?
+        LEFT JOIN chunks p ON p.id = c.parent_id
+        WHERE c.kb_id = ? AND c.level = 'child'
         ORDER BY c.doc_id, c.ordinal
         """,
         (kb_id,),
@@ -69,7 +84,25 @@ def _build(kb_id: str, version: int) -> KBIndex:
         )
 
     if not rows:
-        return KBIndex(version, 0, 0, [], [], [], [], [], [], np.zeros((0, 0), dtype=np.float32), BM25Index([]))
+        return KBIndex(
+            version=version,
+            size=0,
+            dim=0,
+            chunk_ids=[],
+            texts=[],
+            doc_ids=[],
+            doc_names=[],
+            ordinals=[],
+            pages=[],
+            tokens=[],
+            starts=[],
+            ends=[],
+            metas=[],
+            parent_ids=[],
+            parent_texts=[],
+            matrix=np.zeros((0, 0), dtype=np.float32),
+            bm25=BM25Index([]),
+        )
 
     dim = int(rows[0]["dim"]) or embedder.dim
     matrix = np.zeros((len(rows), dim), dtype=np.float32)
@@ -84,6 +117,13 @@ def _build(kb_id: str, version: int) -> KBIndex:
     matrix /= norms
 
     texts = [row["text"] for row in rows]
+    metas = []
+    for row in rows:
+        try:
+            metas.append(json.loads(row["meta"]) if row["meta"] else {})
+        except (TypeError, ValueError):
+            metas.append({})
+
     return KBIndex(
         version=version,
         size=len(rows),
@@ -94,6 +134,12 @@ def _build(kb_id: str, version: int) -> KBIndex:
         doc_names=[row["doc_name"] for row in rows],
         ordinals=[int(row["ordinal"]) for row in rows],
         pages=[row["page"] for row in rows],
+        tokens=[int(row["token_count"] or 0) for row in rows],
+        starts=[row["start_offset"] for row in rows],
+        ends=[row["end_offset"] for row in rows],
+        metas=metas,
+        parent_ids=[row["parent_id"] for row in rows],
+        parent_texts=[row["parent_text"] for row in rows],
         matrix=matrix,
         bm25=BM25Index(texts),
     )
@@ -129,8 +175,9 @@ def retrieve(
     mode: str = "hybrid",
     *,
     index: KBIndex | None = None,
+    include_context: bool = True,
 ) -> tuple[list[dict], int, float]:
-    """Return ``(hits, total_chunks, latency_ms)``."""
+    """Return ``(hits, total_child_chunks, latency_ms)``."""
     started = time.perf_counter()
     index = index if index is not None else get_index(kb_id)
     if index.size == 0:
@@ -176,6 +223,12 @@ def retrieve(
                 "ordinal": index.ordinals[i],
                 "text": index.texts[i],
                 "page": index.pages[i],
+                "parent_id": index.parent_ids[i],
+                "context": index.parent_texts[i] if include_context else None,
+                "tokens": index.tokens[i],
+                "meta": index.metas[i],
+                "start_offset": index.starts[i],
+                "end_offset": index.ends[i],
                 "score": float(fused.get(i, score)),
                 "rank": rank,
                 "scores": {

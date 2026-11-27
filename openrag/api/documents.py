@@ -116,10 +116,13 @@ def list_chunks(
 ) -> dict:
     if db.query_one("SELECT id FROM documents WHERE id = ?", (doc_id,)) is None:
         raise HTTPException(status_code=404, detail="文档不存在")
-    total = db.query_one("SELECT COUNT(*) AS n FROM chunks WHERE doc_id = ?", (doc_id,))["n"]
+    total = db.query_one(
+        "SELECT COUNT(*) AS n FROM chunks WHERE doc_id = ? AND level = 'child'", (doc_id,)
+    )["n"]
     rows = db.query_all(
-        "SELECT id, doc_id, ordinal, text, page FROM chunks WHERE doc_id = ?"
-        " ORDER BY ordinal LIMIT ? OFFSET ?",
+        "SELECT id, doc_id, ordinal, text, page, token_count AS tokens, level,"
+        " start_offset, end_offset FROM chunks"
+        " WHERE doc_id = ? AND level = 'child' ORDER BY ordinal LIMIT ? OFFSET ?",
         (doc_id, limit, offset),
     )
     return {"total": total, "items": rows}

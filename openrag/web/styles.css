@@ -774,6 +774,43 @@ textarea {
   color: var(--faint);
 }
 
+.hit-context {
+  margin-top: 8px;
+  border-top: 1px dashed var(--border);
+  padding-top: 8px;
+}
+
+.hit-context summary {
+  cursor: pointer;
+  font-size: 12px;
+  color: var(--muted);
+  list-style: none;
+}
+
+.hit-context summary::-webkit-details-marker {
+  display: none;
+}
+
+.hit-context summary::before {
+  content: "›";
+  display: inline-block;
+  margin-right: 6px;
+  color: var(--faint);
+  transition: transform 0.15s;
+}
+
+.hit-context[open] summary::before {
+  transform: rotate(90deg);
+}
+
+.hit-context .hit-text {
+  margin-top: 6px;
+  padding: 8px 10px;
+  border-radius: 8px;
+  background: var(--panel-2);
+  border: 1px solid var(--border);
+}
+
 /* ------------------------------------------------------------------ metrics */
 .metric-grid {
   display: grid;

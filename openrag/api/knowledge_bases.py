@@ -17,7 +17,7 @@ router = APIRouter(prefix="/knowledge-bases", tags=["knowledge-bases"])
 _SUMMARY_SQL = """
 SELECT kb.*,
        (SELECT COUNT(*) FROM documents d WHERE d.kb_id = kb.id) AS document_count,
-       (SELECT COUNT(*) FROM chunks c WHERE c.kb_id = kb.id) AS chunk_count
+       (SELECT COUNT(*) FROM chunks c WHERE c.kb_id = kb.id AND c.level = 'child') AS chunk_count
 FROM knowledge_bases kb
 """
 

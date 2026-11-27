@@ -37,6 +37,8 @@ def test_upload_parse_and_retrieve(client, kb):
 
     chunks = client.get(f"/v1/documents/{documents[0]['id']}/chunks").json()
     assert chunks["total"] == documents[0]["chunk_count"]
+    assert all(item["level"] == "child" for item in chunks["items"])
+    assert all(item["tokens"] > 0 for item in chunks["items"])
     assert any("0.8MPa" in item["text"] for item in chunks["items"])
 
     response = client.post(
@@ -49,6 +51,24 @@ def test_upload_parse_and_retrieve(client, kb):
     assert payload["total_chunks"] >= 1
     assert any("0.8MPa" in hit["text"] for hit in payload["hits"])
     assert payload["hits"][0]["doc_name"] == "E-201.md"
+
+    top = payload["hits"][0]
+    assert top["tokens"] > 0
+    assert top["parent_id"]
+    assert top["context"]
+    assert len(top["context"]) >= len(top["text"])
+    assert top["meta"]["heading"].startswith("E-201 离心泵")
+
+
+def test_retrieve_can_skip_parent_context(client, kb):
+    upload(client, kb["id"], "E-201.md", SAMPLE)
+    payload = client.post(
+        "/v1/retrieve",
+        json={"kb_id": kb["id"], "query": "机械密封", "include_context": False},
+    ).json()
+
+    assert payload["hits"]
+    assert all(hit["context"] is None for hit in payload["hits"])
 
 
 def test_retrieval_modes(client, kb):

@@ -44,7 +44,9 @@ def _case_metrics(hits: list[dict], references: set[str], keywords: list[str], k
     covered: set[tuple[str, str]] = set()
 
     for hit in hits:
-        text = hit["text"].lower()
+        # judge what the generator would actually read: the matched child plus
+        # its parent context (small-to-big retrieval)
+        text = (hit["text"] + "\n" + (hit.get("context") or "")).lower()
         units: set[tuple[str, str]] = set()
         if hit["doc_id"] in references:
             units.add(("doc", hit["doc_id"]))
@@ -62,7 +64,9 @@ def _case_metrics(hits: list[dict], references: set[str], keywords: list[str], k
         recall = len(retrieved_docs & references) / gold_count
     else:
         gold_count = len(lowercase_keywords)
-        joined = "\n".join(hit["text"].lower() for hit in hits)
+        joined = "\n".join(
+            hit["text"] + "\n" + (hit.get("context") or "") for hit in hits
+        ).lower()
         recall = sum(1 for kw in lowercase_keywords if kw in joined) / max(gold_count, 1)
 
     hit_at_k = 1.0 if any(flags) else 0.0
@@ -137,6 +141,7 @@ def execute_run(run_id: str) -> None:
                         "doc_name": hit["doc_name"],
                         "page": hit["page"],
                         "ordinal": hit["ordinal"],
+                        "tokens": hit.get("tokens", 0),
                         "score": round(hit["score"], 6),
                         "relevant": bool(relevant),
                         "preview": snippet(hit["text"], 280),
