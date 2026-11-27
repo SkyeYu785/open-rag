@@ -598,6 +598,7 @@ async function runSearch(event) {
         <span>${result.latency_ms.toFixed(1)} ms</span>
         ${result.rerank_applied ? '<span>·</span><span>已重排</span>' : ''}
       </div>
+      ${result.rerank_warning ? `<div class="notice">rerank 未生效，已回退到混合检索：${escapeHtml(result.rerank_warning)}</div>` : ''}
       ${result.hits.map((hit, index) => `
         <div class="hit">
           <div class="hit-head">
@@ -605,7 +606,7 @@ async function runSearch(event) {
             <span class="hit-doc">${escapeHtml(hit.doc_name)}</span>
             ${hit.page ? `<span class="pill">第 ${hit.page} 页</span>` : ''}
             ${hit.tokens ? `<span class="pill">${hit.tokens} tokens</span>` : ''}
-            <span class="hit-score">${Number(hit.relevance ?? hit.score).toFixed(3)}</span>
+            <span class="hit-score">${Number(typeof hit.scores?.rerank === 'number' ? hit.scores.rerank : hit.score).toFixed(3)}</span>
           </div>
           <div class="hit-text">${escapeHtml(hit.text)}</div>
           ${hit.context ? `

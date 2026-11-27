@@ -241,6 +241,8 @@ OPENRAG_RERANK_CANDIDATES=30
 
 请求体 `{"model","query","documents","top_n"}`，响应 `{"results":[{"index","relevance_score"}]}`（也兼容 TEI 的顶层数组）。服务返回 logits 时会自动 sigmoid 归一化，阈值才能通用。本地模型用 `OPENRAG_RERANK_PROVIDER=local` + `pip install -e ".[local]"`。
 
+**分数异常排查**：如果响应里出现 `rerank_warning`，或 rerank 分数长期在 `1e-6` 以下，说明服务并不真正支持这个模型。典型例子是 **llama.cpp 的 `/v1/rerank` 只实现 classification-head 重排模型**（bge-reranker-v2-m3 等），而 Qwen3-Reranker 是生成式 yes/no 打分，需要 vLLM / SGLang 部署。检测到分数不可用时系统会自动回退到混合检索，并在响应与 UI 中提示，不会污染排序。
+
 ## 目录结构
 
 ```

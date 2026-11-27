@@ -40,6 +40,17 @@ class Reranker:
         return f"{self.name}:{self.model}"
 
 
+class RerankUnusable(RuntimeError):
+    """The service answered, but the scores cannot rank anything."""
+
+
+# A working cross-encoder gives clearly-positive scores to relevant pairs.
+# Generative rerankers served by the wrong runtime (e.g. Qwen3-Reranker on
+# llama.cpp, which only implements classification-head rerankers) come back as
+# ~1e-7 for every document; ranking on that is pure noise.
+MIN_USABLE_TOP = 1e-4
+
+
 def _normalise(scores: list[float]) -> list[float]:
     """Map raw cross-encoder logits into 0-1 when the service returns logits."""
     if not scores:
@@ -47,6 +58,20 @@ def _normalise(scores: list[float]) -> list[float]:
     if all(0.0 <= score <= 1.0 for score in scores):
         return scores
     return [1.0 / (1.0 + math.exp(-max(min(score, 60.0), -60.0))) for score in scores]
+
+
+def validate_scores(scores: list[float]) -> None:
+    """Reject rerank output that cannot discriminate between documents."""
+    if not scores:
+        raise RerankUnusable("rerank 服务没有返回任何分数")
+    top = max(scores)
+    if top < MIN_USABLE_TOP:
+        raise RerankUnusable(
+            f"rerank 服务返回的分数全部接近 0（最高 {top:.2e}），无法用于排序。"
+            "通常是服务不支持该 reranker 模型：llama.cpp 只实现了 classification-head "
+            "类重排模型（如 bge-reranker-v2-m3），生成式 yes/no 模型（Qwen3-Reranker）"
+            "应改用 vLLM / SGLang 部署。"
+        )
 
 
 class HttpReranker(Reranker):

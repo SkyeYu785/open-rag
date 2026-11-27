@@ -40,6 +40,7 @@ def retrieve(payload: RetrieveRequest) -> dict:
         "returned": stats["returned"],
         "dropped": stats["dropped"],
         "rerank_applied": stats["rerank_applied"],
+        "rerank_warning": stats.get("rerank_warning"),
         "filter_score": stats["filter_score"],
         "hits": hits,
     }

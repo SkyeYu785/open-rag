@@ -116,6 +116,7 @@ class RetrieveResponse(BaseModel):
     returned: int = 0
     dropped: int = 0
     rerank_applied: bool = False
+    rerank_warning: str | None = None
     filter_score: str = ""
     hits: list[RetrievalHit]
 

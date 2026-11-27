@@ -116,3 +116,26 @@ def test_broken_reranker_falls_back_to_hybrid(client, kb, monkeypatch):
 
     assert payload["rerank_applied"] is False
     assert payload["hits"]
+
+
+def test_degenerate_rerank_scores_fall_back(client, kb, monkeypatch):
+    upload(client, kb["id"], "E-201.md", SAMPLE)
+
+    class ZeroReranker:
+        name = "zero"
+        model = "zero"
+
+        def rerank(self, query: str, documents: list[str]) -> list[float]:
+            return [1e-9 for _ in documents]
+
+    monkeypatch.setattr("openrag.services.retrieval.get_reranker", lambda: ZeroReranker())
+
+    payload = client.post(
+        "/v1/retrieve", json={"kb_id": kb["id"], "query": "机械密封", "top_k": 3}
+    ).json()
+
+    assert payload["rerank_applied"] is False
+    assert payload["rerank_warning"]
+    assert "接近 0" in payload["rerank_warning"]
+    assert payload["filter_score"] == "vector"
+    assert payload["hits"]

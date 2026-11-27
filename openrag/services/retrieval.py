@@ -19,7 +19,7 @@ from .. import db
 from ..config import get_settings
 from .bm25 import BM25Index
 from .embedding import get_embedder
-from .rerank import get_reranker
+from .rerank import get_reranker, validate_scores
 
 logger = logging.getLogger(__name__)
 
@@ -269,6 +269,7 @@ def retrieve(
             "returned": 0,
             "dropped": 0,
             "rerank_applied": False,
+            "rerank_warning": None,
             "filter_score": "",
         }
 
@@ -338,14 +339,17 @@ def retrieve(
         )
 
     rerank_applied = False
+    rerank_warning: str | None = None
     if reranker is not None and hits:
         try:
             rerank_scores = reranker.rerank(query, [hit["text"] for hit in hits])
+            validate_scores(rerank_scores)
             for hit, rerank_score in zip(hits, rerank_scores):
                 hit["scores"]["rerank"] = float(rerank_score)
             hits.sort(key=lambda hit: hit["scores"].get("rerank", -1e9), reverse=True)
             rerank_applied = True
         except Exception as exc:  # noqa: BLE001 - degrade to hybrid ranking
+            rerank_warning = str(exc)
             logger.warning("rerank failed, keeping hybrid order: %s", exc)
 
     if rerank_applied:
@@ -366,6 +370,7 @@ def retrieve(
         "returned": len(selected),
         "dropped": dropped,
         "rerank_applied": rerank_applied,
+        "rerank_warning": rerank_warning,
         "filter_score": score_key,
     }
     return selected, index.size, (time.perf_counter() - started) * 1000, stats
